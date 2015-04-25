@@ -1,0 +1,7 @@
+{ 
+    "itemDisplayName": "Spin up a multinode DCOS cluster", 
+    "description": "Template spins up a DCOS cluster", 
+    "githubUsername": "mesosphere", 
+    "summary": "DCOS cluster",
+    "dateUpdated": "2015-04-17" 
+} 

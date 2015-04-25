@@ -1,0 +1,327 @@
+{
+  "$schema": "http://schema.management.azure.com/schemas/2014-04-01-preview/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "storageAccountName": {
+      "type": "string",
+      "defaultValue": "uniqueStorageAccountName",
+      "metadata": {
+        "Description": "Unique namespace for the Storage Account where the Virtual Machine's disks will be placed"
+      }
+    },
+    "region": {
+      "type": "string",
+      "defaultValue": "East Asia",
+      "metadata": {
+        "Description": "Location where resources will be provisioned"
+      }
+    },
+    "virtualNetworkName": {
+      "type": "string",
+      "defaultValue": "vnet",
+      "metadata": {
+        "Description": "Virtual Network"
+      }
+    },
+    "vmSizeMasterNodes": {
+      "type": "string",
+      "defaultValue": "Standard_A3",
+      "metadata": {
+        "Description": "Size of the Master nodes"
+      }
+    },
+    "vmSizeSlaveNodes": {
+      "type": "string",
+      "defaultValue": "Standard_A3",
+      "metadata": {
+        "Description": "Size of the Slave nodes"
+      }
+    },
+    "numberOfMasters": {
+      "type": "int",
+      "defaultValue": 3,
+      "metadata": {
+        "Description": "Number of Master nodes"
+      }
+    },
+    "numberOfSlaves": {
+      "type": "int",
+      "defaultValue": 1,
+      "metadata": {
+        "Description": "Number of Slave nodes"
+      }
+    },
+    "addressPrefix": {
+      "type": "string",
+      "defaultValue": "10.0.0.0/16",
+      "metadata": {
+        "Description": "Address space for the VNET"
+      }
+    },
+    "subnet1Name": {
+      "type": "string",
+      "defaultValue": "Data",
+      "metadata": {
+        "Description": "Subnet name for the VNET that resources will be provisionined in to"
+      }
+    },
+    "subnet1Prefix": {
+      "type": "string",
+      "defaultValue": "10.0.0.0/24",
+      "metadata": {
+        "Description": "Address space for the subnet"
+      }
+    },
+    "sshKeyData": {
+      "type": "string",
+      "metadata": {
+        "Description": "Public key for SSH authentication"
+      }
+    },
+    "uuid": {
+      "type": "string",
+      "metadata": {
+        "Description": "Globally unique cluster identifier in Azure namespace"
+      }
+    }
+  },
+  "variables": {
+    "adminUsername": "core",
+    "vmStorageAccountContainerName": "vhd",
+    "vmSourceImageName": "2b171e93f07c4903bcad35bda10acf22__CoreOS-Beta-633.1.0",
+    "vnetID": "[resourceId('Microsoft.Network/virtualNetworks',parameters('virtualNetworkName'))]",
+    "subnet1Ref": "[concat(variables('vnetID'),'/subnets/',parameters('subnet1Name'))]",
+    "sourceImageName": "[concat('/', subscription().subscriptionId,'/services/images/',variables('vmSourceImageName'))]",
+    "sshKeyPath": "[concat('/home/',variables('adminUsername'),'/.ssh/authorized_keys')]",
+    "mesosQuorum": "2"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "name": "[parameters('storageAccountName')]",
+      "apiVersion": "2014-12-01-preview",
+      "location": "[parameters('region')]",
+      "properties": {
+        "accountType": "Standard_LRS"
+      }
+    },
+    {
+      "apiVersion": "2014-12-01-preview",
+      "type": "Microsoft.Compute/availabilitySets",
+      "name": "masters",
+      "location": "[parameters('region')]",
+      "properties": {}
+    },
+    {
+      "apiVersion": "2014-12-01-preview",
+      "type": "Microsoft.Network/virtualNetworks",
+      "name": "[parameters('virtualNetworkName')]",
+      "location": "[parameters('region')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "[parameters('addressPrefix')]"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[parameters('subnet1Name')]",
+            "properties": {
+              "addressPrefix": "[parameters('subnet1Prefix')]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "name": "[concat('masterPublicIP', copyindex())]",
+      "copy": {
+        "name": "ipLoop",
+        "count": "[parameters('numberOfMasters')]"
+      },
+      "location": "[parameters('region')]",
+      "apiVersion": "2014-12-01-preview",
+      "properties": {
+        "publicIPAllocationMethod": "Dynamic",
+        "dnsSettings": {
+          "domainNameLabel": "[concat('master', copyindex(), '-', parameters('uuid'))]"
+        }
+      }
+    },
+    {
+      "apiVersion": "2014-12-01-preview",
+      "type": "Microsoft.Network/networkInterfaces",
+      "name": "[concat('slaveNodeNic', copyindex())]",
+      "location": "[parameters('region')]",
+      "copy": {
+        "name": "slaveNodesNicLoop",
+        "count": "[parameters('numberOfSlaves')]"
+      },
+      "dependsOn": [
+        "[concat('Microsoft.Network/virtualNetworks/', parameters('virtualNetworkName'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "subnet": {
+                "id": "[variables('subnet1Ref')]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "2014-12-01-preview",
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "[concat('slave', copyindex())]",
+      "location": "[parameters('region')]",
+      "copy": {
+        "name": "slaveVmLoop",
+        "count": "[parameters('numberOfSlaves')]"
+      },
+      "dependsOn": [
+        "[concat('Microsoft.Network/networkInterfaces/', 'slaveNodeNic', copyindex())]",
+        "[concat('Microsoft.Storage/storageAccounts/', parameters('storageAccountName'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('vmSizeSlaveNodes')]"
+        },
+        "osProfile": {
+          "computername": "[concat('slave', copyIndex())]",
+          "adminUsername": "[variables('adminUsername')]",
+          "customData": "[base64(concat('#cloud-config\n\n', '{\"coreos\": {\"units\": [{\"command\": \"start\", \"content\": \"[Unit]\\nDescription=Mount /var/lib\\nBefore=dbus.service\\n[Mount]\\nWhat=/dev/sdb1\\nWhere=/var/lib\\nType=ext4\\n\", \"name\": \"var-lib.mount\"}, {\"command\": \"stop\", \"mask\": true, \"name\": \"systemd-resolved.service\"}, {\"command\": \"stop\", \"mask\": true, \"name\": \"etcd.service\"}, {\"command\": \"start\", \"content\": \"[Unit]\\nDescription=Write out dynamic config values\\n[Service]\\nType=oneshot\\nEnvironmentFile=/etc/environment\\n# Marathon depends on `hostname` resolution working\\nExecStart=/usr/bin/bash -c \\\"echo ${COREOS_PRIVATE_IPV4} $(hostname) > /etc/hosts\\\"\\n\", \"name\": \"config-writer.service\"}, {\"content\": \"[Unit]\\nDescription=Download the DCOS\\nAfter=network-online.target\\nWants=network-online.target\\nConditionPathExists=!/opt/mesosphere/\\n[Service]\\nType=oneshot\\nExecStartPre=/usr/bin/curl http://s3.amazonaws.com/downloads.mesosphere.io/dcos/testing/thomas-marathon/bootstrap.tar.xz -o /tmp/bootstrap.tar.xz\\nExecStartPre=/usr/bin/mkdir -p /opt/mesosphere\\nExecStart=/usr/bin/tar -xf /tmp/bootstrap.tar.xz -C /opt/mesosphere\\n\", \"name\": \"dcos-download.service\"}, {\"command\": \"start\", \"content\": \"[Unit]\\nDescription=Prep the Pkgpanda working directories for this host.\\nRequires=dcos-download.service\\nAfter=dcos-download.service\\n[Service]\\nType=oneshot\\nEnvironmentFile=/opt/mesosphere/environment\\nExecStart=/opt/mesosphere/bin/pkgpanda setup\\n[Install]\\nWantedBy=multi-user.target\\n\", \"enable\": true, \"name\": \"dcos-setup.service\"}], \"update\": {\"reboot-strategy\": \"off\"}}, \"write_files\": [{\"content\": \"nameserver 168.63.129.16\", \"path\": \"/etc/resolv.conf\"}, {\"content\": \"http://s3.amazonaws.com/downloads.mesosphere.io/dcos/testing/thomas-marathon\", \"owner\": \"root\", \"path\": \"/etc/mesosphere/setup-flags/repository-url\", \"permissions\": 420}, {\"path\": \"/etc/mesosphere/roles/slave\"}, {\"content\": \"{}\", \"path\": \"/etc/mesosphere/setup-packages/dcos-config--setup/pkginfo.json\"}, {\"content\": \"MESOS_MASTER=zk://leader.mesos:2181/mesos\\nMESOS_CONTAINERIZERS=docker,mesos\\nMESOS_LOG_DIR=/var/log/mesos\\nMESOS_EXECUTOR_REGISTRATION_TIMEOUT=5mins\\nMESOS_ISOLATION=cgroups/cpu,cgroups/mem\\nMESOS_WORK_DIR=/var/lib/mesos/slave\\nMESOS_RESOURCES=ports:[1025-2180,2182-3887,3889-5049,5052-8079,8082-65535]\\nMESOS_HOSTNAME=$private_ipv4\\nMESOS_IP=$private_ipv4\\n\", \"path\": \"/etc/mesosphere/setup-packages/dcos-config--setup/etc/mesos-slave\"}, {\"content\": \"MASTER_ELB=', concat('master0-', parameters('uuid'), '.eastasia.cloudapp.azure.com'),'\\nFALLBACK_DNS=168.63.129.16\\n\", \"path\": \"/etc/mesosphere/setup-packages/dcos-config--setup/etc/cloudenv\"}]}'))]",
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": "true",
+            "ssh": {
+              "publicKeys": [
+                {
+                  "path": "[variables('sshKeyPath')]",
+                  "keyData": "[parameters('sshKeyData')]"
+                }
+              ]
+            }
+          }
+        },
+        "storageProfile": {
+          "sourceImage": {
+            "id": "[variables('sourceImageName')]"
+          },
+          "destinationVhdsContainer": "[concat('http://',parameters('storageAccountName'),'.blob.core.windows.net/',variables('vmStorageAccountContainerName'),'/')]"
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces',concat('slaveNodeNic', copyindex()))]"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "apiVersion": "2014-12-01-preview",
+      "type": "Microsoft.Network/networkInterfaces",
+      "name": "[concat('masterNodeNic', copyindex())]",
+      "location": "[parameters('region')]",
+      "copy": {
+        "name": "masterNicLoop",
+        "count": "[parameters('numberOfMasters')]"
+      },
+      "dependsOn": [
+        "[concat('Microsoft.Network/virtualNetworks/', parameters('virtualNetworkName'))]",
+        "[concat('Microsoft.Network/publicIPAddresses/', 'masterPublicIP', copyindex())]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Dynamic",
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIpAddresses', concat('masterPublicIP', copyindex()))]"
+              },
+              "subnet": {
+                "id": "[variables('subnet1Ref')]"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "2014-12-01-preview",
+      "type": "Microsoft.Compute/virtualMachines",
+      "name": "[concat('master', copyindex())]",
+      "location": "[parameters('region')]",
+      "copy": {
+        "name": "masterVmLoop",
+        "count": "[parameters('numberOfMasters')]"
+      },
+      "dependsOn": [
+        "[concat('Microsoft.Network/networkInterfaces/', 'masterNodeNic', copyindex())]",
+        "[concat('Microsoft.Compute/availabilitySets/', 'masters')]",
+        "[concat('Microsoft.Storage/storageAccounts/', parameters('storageAccountName'))]"
+      ],
+      "properties": {
+        "availabilitySet": {
+          "id": "[resourceId('Microsoft.Compute/availabilitySets', 'masters')]"
+        },
+        "hardwareProfile": {
+          "vmSize": "[parameters('vmSizeMasterNodes')]"
+        },
+        "osProfile": {
+          "computername": "[concat('master', copyIndex())]",
+          "adminUsername": "[variables('adminUsername')]",
+          "customData": "[base64(concat('#cloud-config\n\n', '{\"coreos\": {\"units\": [{\"command\": \"start\", \"content\": \"[Unit]\\nDescription=Mount /var/lib\\nBefore=dbus.service\\n[Mount]\\nWhat=/dev/sdb1\\nWhere=/var/lib\\nType=ext4\\n\", \"name\": \"var-lib.mount\"}, {\"command\": \"stop\", \"mask\": true, \"name\": \"systemd-resolved.service\"}, {\"command\": \"stop\", \"mask\": true, \"name\": \"etcd.service\"}, {\"command\": \"start\", \"content\": \"[Unit]\\nDescription=Write out dynamic config values\\n[Service]\\nType=oneshot\\nEnvironmentFile=/etc/environment\\n# Marathon depends on `hostname` resolution working\\nExecStart=/usr/bin/bash -c \\\"echo ${COREOS_PRIVATE_IPV4} $(hostname) ', concat('master', copyIndex(), '-', parameters('uuid'), '.eastasia.cloudapp.azure.com'),' > /etc/hosts\\\"\\n\", \"name\": \"config-writer.service\"}, {\"content\": \"[Unit]\\nDescription=Download the DCOS\\nAfter=network-online.target\\nWants=network-online.target\\nConditionPathExists=!/opt/mesosphere/\\n[Service]\\nType=oneshot\\nExecStartPre=/usr/bin/curl http://s3.amazonaws.com/downloads.mesosphere.io/dcos/testing/thomas-marathon/bootstrap.tar.xz -o /tmp/bootstrap.tar.xz\\nExecStartPre=/usr/bin/mkdir -p /opt/mesosphere\\nExecStart=/usr/bin/tar -xf /tmp/bootstrap.tar.xz -C /opt/mesosphere\\n\", \"name\": \"dcos-download.service\"}, {\"command\": \"start\", \"content\": \"[Unit]\\nDescription=Prep the Pkgpanda working directories for this host.\\nRequires=dcos-download.service\\nAfter=dcos-download.service\\n[Service]\\nType=oneshot\\nEnvironmentFile=/opt/mesosphere/environment\\nExecStart=/opt/mesosphere/bin/pkgpanda setup\\n[Install]\\nWantedBy=multi-user.target\\n\", \"enable\": true, \"name\": \"dcos-setup.service\"}], \"update\": {\"reboot-strategy\": \"off\"}}, \"write_files\": [{\"content\": \"nameserver 168.63.129.16\", \"path\": \"/etc/resolv.conf\"}, {\"content\": \"http://s3.amazonaws.com/downloads.mesosphere.io/dcos/testing/thomas-marathon\", \"owner\": \"root\", \"path\": \"/etc/mesosphere/setup-flags/repository-url\", \"permissions\": 420}, {\"path\": \"/etc/mesosphere/roles/master\"}, {\"content\": \"{}\", \"path\": \"/etc/mesosphere/setup-packages/dcos-config--setup/pkginfo.json\"}, {\"content\": \"{\\n  \\\"zk\\\": \\\"zk://127.0.0.1:2181/mesos\\\",\\n  \\\"refreshSeconds\\\": 60,\\n  \\\"ttl\\\": 60,\\n  \\\"domain\\\": \\\"mesos\\\",\\n  \\\"port\\\": 53,\\n  \\\"resolvers\\\": [\\\"168.63.129.16\\\"],\\n  \\\"timeout\\\": 5,\\n  \\\"listener\\\": \\\"0.0.0.0\\\",\\n  \\\"email\\\": \\\"root.mesos-dns.mesos\\\"\\n}\\n\", \"path\": \"/etc/mesosphere/setup-packages/dcos-config--setup/etc/mesos-dns.json\"}, {\"content\": \"MESOS_LOG_DIR=/var/log/mesos\\nMESOS_WORK_DIR=/var/lib/mesos/master\\nMESOS_ZK=zk://127.0.0.1:2181/mesos\\nMESOS_QUORUM=', variables('mesosQuorum'),'\\nMESOS_CLUSTER=', parameters('uuid'),'\\nMESOS_HOSTNAME=', concat('master', copyIndex(), '-', parameters('uuid'), '.eastasia.cloudapp.azure.com'),'\\nMESOS_IP=$private_ipv4\\n\", \"path\": \"/etc/mesosphere/setup-packages/dcos-config--setup/etc/mesos-master\"}, {\"content\": \"MASTER_ELB=127.0.0.1\\nZOOKEEPER_CLUSTER_SIZE=', parameters('numberOfMasters'),'\\nFALLBACK_DNS=168.63.129.16\\nMARATHON_HOSTNAME=', concat('master', copyIndex(), '-', parameters('uuid'), '.eastasia.cloudapp.azure.com'),'\\n\", \"path\": \"/etc/mesosphere/setup-packages/dcos-config--setup/etc/cloudenv\"}, {\"content\": \"AZURE_CONTAINER=apollo-exhibitor\\nAZURE_PREFIX=', parameters('uuid'),'\\nAZURE_ACCOUNT_NAME=', parameters('storageAccountName'),'\\nAZURE_ACCOUNT_KEY=', listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2014-12-01-preview').key1,'\\nEXHIBITOR_WEB_UI_PORT=8181\\nEXHIBITOR_HOSTNAME=', concat('master', copyIndex(), '-', parameters('uuid'), '.eastasia.cloudapp.azure.com'),'\\n\", \"path\": \"/etc/mesosphere/setup-packages/dcos-config--setup/etc/exhibitor\"}]}'))]",
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": "true",
+            "ssh": {
+              "publicKeys": [
+                {
+                  "path": "[variables('sshKeyPath')]",
+                  "keyData": "[parameters('sshKeyData')]"
+                }
+              ]
+            }
+          }
+        },
+        "storageProfile": {
+          "sourceImage": {
+            "id": "[variables('sourceImageName')]"
+          },
+          "destinationVhdsContainer": "[concat('http://',parameters('storageAccountName'),'.blob.core.windows.net/',variables('vmStorageAccountContainerName'),'/')]"
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces',concat('masterNodeNic', copyindex()))]"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs":
+  {
+      "masterURL0":
+      {
+          "value": "[concat('master0-', parameters('uuid'), '.eastasia.cloudapp.azure.com')]",
+          "type": "string"
+      },
+      "masterURL1":
+      {
+          "value": "[concat('master1-', parameters('uuid'), '.eastasia.cloudapp.azure.com')]",
+          "type": "string"
+      },
+      "masterURL2":
+      {
+          "value": "[concat('master2-', parameters('uuid'), '.eastasia.cloudapp.azure.com')]",
+          "type": "string"
+      }
+  }
+}
